@@ -371,15 +371,15 @@ export async function extractSlidesForSource({
           reportSlidesProgress?.('downloading video', P_FETCH_VIDEO)
           const downloadStartedAt = Date.now()
           try {
-          const downloaded = await downloadYoutubeVideo({
-            ytDlpPath: ytDlp,
-            url: source.url,
-            timeoutMs,
-            format,
-            cookiesFromBrowser: ytDlpCookiesFromBrowser,
-            onProgress: (percent, detail) => {
-              const ratio = clamp(percent / 100, 0, 1)
-              const mapped = P_FETCH_VIDEO + ratio * (P_DOWNLOAD_VIDEO - P_FETCH_VIDEO)
+            const downloaded = await downloadYoutubeVideo({
+              ytDlpPath: ytDlp,
+              url: source.url,
+              timeoutMs,
+              format,
+              cookiesFromBrowser: ytDlpCookiesFromBrowser,
+              onProgress: (percent, detail) => {
+                const ratio = clamp(percent / 100, 0, 1)
+                const mapped = P_FETCH_VIDEO + ratio * (P_DOWNLOAD_VIDEO - P_FETCH_VIDEO)
                 reportSlidesProgress?.('downloading video', mapped, detail)
               },
             })
@@ -400,13 +400,13 @@ export async function extractSlidesForSource({
             warnings.push(`Failed to download video; falling back to stream URL: ${String(error)}`)
             reportSlidesProgress?.('fetching video', P_FETCH_VIDEO)
             const streamStartedAt = Date.now()
-          const streamUrl = await resolveYoutubeStreamUrl({
-            ytDlpPath: ytDlp,
-            url: source.url,
-            format,
-            timeoutMs,
-            cookiesFromBrowser: ytDlpCookiesFromBrowser,
-          })
+            const streamUrl = await resolveYoutubeStreamUrl({
+              ytDlpPath: ytDlp,
+              url: source.url,
+              format,
+              timeoutMs,
+              cookiesFromBrowser: ytDlpCookiesFromBrowser,
+            })
             inputPath = streamUrl
             logSlidesTiming(`yt-dlp stream url (direct source, format=${format})`, streamStartedAt)
           }
