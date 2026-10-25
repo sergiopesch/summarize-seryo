@@ -569,6 +569,25 @@ async function activateTabByUrl(harness: ExtensionHarness, expectedPrefix: strin
   }, expectedPrefix)
 }
 
+// These tests provide their own page data and need a stable HTTPS tab origin.
+// Intercept only the exact main-frame navigation; API, media and subresource
+// requests continue through each test's existing real/mocked network controls.
+async function gotoBlankFixture(page: Page, url = 'https://example.com', title = 'Example Domain') {
+  await page.route(new URL(url).href, async (route) => {
+    const request = route.request()
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'text/html',
+        body: `<!doctype html><html><head><title>${title}</title></head><body></body></html>`,
+      })
+      return
+    }
+    await route.fallback()
+  })
+  await page.goto(url, { waitUntil: 'domcontentloaded' })
+}
+
 async function openExtensionPage(
   harness: ExtensionHarness,
   pathname: string,
@@ -1811,6 +1830,7 @@ test('sidepanel switches between page, video, and slides modes', async ({
   const harness = await launchExtension(getBrowserFromProject(testInfo.project.name))
 
   try {
+    await mockDaemonSummarize(harness)
     await seedSettings(harness, {
       token: 'test-token',
       autoSummarize: false,
@@ -1818,12 +1838,25 @@ test('sidepanel switches between page, video, and slides modes', async ({
       slidesLayout: 'gallery',
       slidesOcrEnabled: true,
     })
+    const sourceUrl = 'https://example.com/video'
+    const contentPage = await harness.context.newPage()
+    await gotoBlankFixture(contentPage, sourceUrl, 'Example Video')
+    await contentPage.evaluate(() => {
+      document.body.innerHTML = '<video></video><audio></audio>'
+    })
+    await injectContentScript(harness, 'content-scripts/extract.js', sourceUrl)
+    await waitForExtractReady(harness, sourceUrl)
+
     const page = await openExtensionPage(harness, 'sidepanel.html', '#title', () => {
       ;(
         window as typeof globalThis & { __summarizeTestHooks?: Record<string, unknown> }
       ).__summarizeTestHooks = {}
     })
     await waitForPanelPort(page)
+    await activateTabByUrl(harness, sourceUrl)
+    await waitForActiveTabUrl(harness, sourceUrl)
+    const activeTabId = await getActiveTabId(harness)
+    await expect(page.locator('#title')).toHaveText('Example Video')
 
     await page.route('http://127.0.0.1:8787/v1/tools', async (route) => {
       await route.fulfill({
@@ -1885,7 +1918,7 @@ test('sidepanel switches between page, video, and slides modes', async ({
     })
 
     const uiState = buildUiState({
-      tab: { id: 1, url: 'https://example.com/video', title: 'Example Video' },
+      tab: { id: activeTabId, url: sourceUrl, title: 'Example Video' },
       media: { hasVideo: true, hasAudio: true, hasCaptions: false },
       stats: { pageWords: 120, videoDurationSeconds: 120 },
       settings: {
@@ -2163,6 +2196,7 @@ test('sidepanel scrolls YouTube slides and shows text for each slide', async ({
   const harness = await launchExtension(getBrowserFromProject(testInfo.project.name))
 
   try {
+    await mockDaemonSummarize(harness)
     await seedSettings(harness, {
       token: 'test-token',
       autoSummarize: false,
@@ -2170,12 +2204,22 @@ test('sidepanel scrolls YouTube slides and shows text for each slide', async ({
       slidesLayout: 'gallery',
       slidesOcrEnabled: true,
     })
+    // Keep the real active tab consistent with the synthetic slide payload so
+    // background state updates cannot replace it with the extension page.
+    const sourceUrl = 'https://www.youtube.com/watch?v=scrollTest123'
+    const contentPage = await harness.context.newPage()
+    await gotoBlankFixture(contentPage, sourceUrl, 'Scroll Test')
+
     const page = await openExtensionPage(harness, 'sidepanel.html', '#title', () => {
       ;(
         window as typeof globalThis & { __summarizeTestHooks?: Record<string, unknown> }
       ).__summarizeTestHooks = {}
     })
     await waitForPanelPort(page)
+    await activateTabByUrl(harness, sourceUrl)
+    await waitForActiveTabUrl(harness, sourceUrl)
+    const activeTabId = await getActiveTabId(harness)
+    await expect(page.locator('#title')).toHaveText('Scroll Test')
 
     const placeholderPng = Buffer.from(
       'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO3kq0cAAAAASUVORK5CYII=',
@@ -2192,9 +2236,8 @@ test('sidepanel scrolls YouTube slides and shows text for each slide', async ({
       })
     })
 
-    const sourceUrl = 'https://www.youtube.com/watch?v=scrollTest123'
     const uiState = buildUiState({
-      tab: { id: 1, url: sourceUrl, title: 'Scroll Test' },
+      tab: { id: activeTabId, url: sourceUrl, title: 'Scroll Test' },
       media: { hasVideo: true, hasAudio: true, hasCaptions: false },
       stats: { pageWords: 120, videoDurationSeconds: 600 },
       settings: {
@@ -2460,7 +2503,7 @@ test('sidepanel video selection does not request slides when disabled', async ({
     await mockDaemonSummarize(harness)
     await seedSettings(harness, { token: 'test-token', autoSummarize: false, slidesEnabled: false })
     const contentPage = await harness.context.newPage()
-    await contentPage.goto('https://example.com', { waitUntil: 'domcontentloaded' })
+    await gotoBlankFixture(contentPage)
     await contentPage.evaluate(() => {
       document.body.innerHTML = `<article><p>${'Hello '.repeat(40)}</p></article>`
     })
@@ -3135,7 +3178,7 @@ test('sidepanel shows an error when agent request fails', async ({
   try {
     await seedSettings(harness, { token: 'test-token', autoSummarize: false, chatEnabled: true })
     const contentPage = await harness.context.newPage()
-    await contentPage.goto('https://example.com', { waitUntil: 'domcontentloaded' })
+    await gotoBlankFixture(contentPage)
     await contentPage.evaluate(() => {
       document.body.innerHTML = `<article><p>${'Agent error test. '.repeat(12)}</p></article>`
     })
@@ -3238,7 +3281,7 @@ test('sidepanel shows daemon upgrade hint when /v1/agent is missing', async ({
   try {
     await seedSettings(harness, { token: 'test-token', autoSummarize: false, chatEnabled: true })
     const contentPage = await harness.context.newPage()
-    await contentPage.goto('https://example.com', { waitUntil: 'domcontentloaded' })
+    await gotoBlankFixture(contentPage)
     await contentPage.evaluate(() => {
       document.body.innerHTML = `<article><p>${'Agent 404 test. '.repeat(12)}</p></article>`
     })
@@ -3322,7 +3365,7 @@ test('sidepanel chat queue sends next message after stream completes', async ({
   try {
     await seedSettings(harness, { token: 'test-token', autoSummarize: false, chatEnabled: true })
     const contentPage = await harness.context.newPage()
-    await contentPage.goto('https://example.com', { waitUntil: 'domcontentloaded' })
+    await gotoBlankFixture(contentPage)
     await contentPage.evaluate(() => {
       document.body.innerHTML = `<article><p>${'Hello '.repeat(40)}</p><p>More text for chat.</p></article>`
     })
@@ -3389,7 +3432,7 @@ test('sidepanel chat queue drains messages after stream completes', async ({
   try {
     await seedSettings(harness, { token: 'test-token', autoSummarize: false, chatEnabled: true })
     const contentPage = await harness.context.newPage()
-    await contentPage.goto('https://example.com', { waitUntil: 'domcontentloaded' })
+    await gotoBlankFixture(contentPage)
     await contentPage.evaluate(() => {
       document.body.innerHTML = `<article><p>${'Hello '.repeat(40)}</p><p>More text for chat.</p></article>`
     })
@@ -3475,7 +3518,7 @@ test('sidepanel clears chat on user navigation', async ({
   try {
     await seedSettings(harness, { token: 'test-token', autoSummarize: false, chatEnabled: true })
     const contentPage = await harness.context.newPage()
-    await contentPage.goto('https://example.com', { waitUntil: 'domcontentloaded' })
+    await gotoBlankFixture(contentPage)
     await contentPage.evaluate(() => {
       document.body.innerHTML = `<article><p>Chat nav test.</p></article>`
     })
@@ -3558,7 +3601,7 @@ test('auto summarize reruns after panel reopen', async ({
     await seedSettings(harness, { token: 'test-token', autoSummarize: true })
 
     const contentPage = await harness.context.newPage()
-    await contentPage.goto('https://example.com', { waitUntil: 'domcontentloaded' })
+    await gotoBlankFixture(contentPage)
     const activeUrl = contentPage.url()
     await maybeBringToFront(contentPage)
     await activateTabByUrl(harness, 'https://example.com')
@@ -3687,7 +3730,7 @@ test('hover tooltip proxies daemon calls via background (no page-origin localhos
 
     const page = await harness.context.newPage()
     trackErrors(page, harness.pageErrors, harness.consoleErrors)
-    await page.goto('https://example.com', { waitUntil: 'domcontentloaded' })
+    await gotoBlankFixture(page)
     await maybeBringToFront(page)
     await activateTabByUrl(harness, 'https://example.com')
     await waitForActiveTabUrl(harness, 'https://example.com')
@@ -3732,7 +3775,7 @@ test('content script extracts visible duration metadata', async ({
     await seedSettings(harness, { token: 'test-token', autoSummarize: false })
     const contentPage = await harness.context.newPage()
     trackErrors(contentPage, harness.pageErrors, harness.consoleErrors)
-    await contentPage.goto('https://example.com', { waitUntil: 'domcontentloaded' })
+    await gotoBlankFixture(contentPage)
     await contentPage.evaluate(() => {
       document.title = 'Test Video'
       const meta = document.createElement('meta')
